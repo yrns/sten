@@ -5,9 +5,11 @@ use std::{
     path::PathBuf,
 };
 
+use notify_rust::{Hint, Notification};
 use reqwest::header;
 use serde::Deserialize;
 use serde_json::json;
+use strum::Display;
 
 #[derive(Debug, Deserialize)]
 struct Health(Status);
@@ -18,13 +20,13 @@ enum Status {
     OK,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Display, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ChangeType {
     File,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Display, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Action {
     Deleted,
@@ -51,6 +53,19 @@ struct RemoteChangeDetected {
     label: String,
     #[serde(rename = "modifiedBy")]
     modified_by: String,
+}
+
+impl std::fmt::Display for RemoteChangeDetected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} {}: {}",
+            self.change_type,
+            self.action,
+            self.path.display(),
+            //self.modified_by
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -134,8 +149,8 @@ async fn main() -> Result<(), anyhow::Error> {
         let events: Vec<Event> = client.get(url).send().await?.json().await?;
 
         for e in events {
-            match &e.data {
-                EventData::RemoteChangeDetected(data) => {
+            match e.data {
+                EventData::RemoteChangeDetected(mut data) => {
                     // Lookup local folder path.
                     let mut path: PathBuf = match folder_paths.entry(data.folder.clone()) {
                         Entry::Occupied(e) => e.get().clone(),
@@ -149,8 +164,27 @@ async fn main() -> Result<(), anyhow::Error> {
                         }
                     };
 
+                    // TODO relative to HOME, Path::strip_prefix
                     path.push(&data.path);
-                    println!("file updated: {:?}", path);
+                    data.path = path;
+
+                    match Notification::new()
+                        .summary("sten")
+                        .body(&data.to_string())
+                        .icon("document-open")
+                        .action("default", "default")
+                        .show()
+                    {
+                        Ok(n) => n.wait_for_action(|action| match action {
+                            "default" => {
+                                if let Err(err) = open::that(&data.path) {
+                                    eprintln!("error on open: {err}")
+                                }
+                            }
+                            _ => println!("unhandled response: {action}"),
+                        }),
+                        Err(e) => eprintln!("error: {:?}", e),
+                    }
                 }
                 _ => println!("{:#?}", e),
             }
